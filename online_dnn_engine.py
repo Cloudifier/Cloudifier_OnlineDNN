@@ -192,6 +192,7 @@ class OnlineDNNLayer:
         self.ThetaSaved = None
         
         self.gradient = None
+        self.momentum = None
         self.numericg = None
 
         return
@@ -495,6 +496,7 @@ class OnlineDNN:
         self.cost_list = list()
         self.Name = Name
         self.nr_layers = 0
+        self.momentum_speed = 0.9
 
         return
         
@@ -621,7 +623,14 @@ class OnlineDNN:
         # now update Thetas
         for i in range(nr_layers-1,0,-1):
             grad = self.Layers[i].gradient
-            self.Layers[i].Theta = self.Layers[i].Theta  - alpha * grad  
+            momentum = self.Layers[i].momentum
+            if momentum != None:
+                momentum = self.Layers[i].momentum*self.momentum_speed
+                momentum = momentum + grad
+            else:
+                momentum = grad
+            self.Layers[i].Theta = self.Layers[i].Theta  - alpha * momentum  
+            self.Layers[i].momentum = momentum
             
         self.Step += 1    
         return
@@ -757,37 +766,41 @@ if __name__ == '__main__':
     ou_units = np.array(labels).size
 
 
-    dnn = OnlineDNN(batch_size = batch_size, 
-                    output_labels = labels,
-                    alpha = 0.1)
     ###
     ###
 
     first run / compare with mnielsen with same hyperparams
+    http://neuralnetworksanddeeplearning.com/chap3.html
+    (and/or change output to sigmoid layer)
   
     ###
     ###
   
+    ##
+    ##  BEGIN MODEL ARCHITECTURE
+    ##
+    dnn = OnlineDNN(batch_size = batch_size, 
+                    output_labels = labels,
+                    alpha = 0.1)
     InpLayer  = OnlineDNNLayer(nr_units = in_units, 
                               layer_name = 'Input Layer')
-
     HidLayer1 = OnlineDNNLayer(nr_units = h1_units, 
                               layer_name = 'Hidden Layer #1',
                               activation = 'sigmoid')
-
 #    HidLayer2 = OnlineDNNLayer(nr_units = h2_units, 
 #                              layer_name = 'Hidden Layer #2',
 #                              activation = 'sigmoid')
-
     OutLayer  = OnlineDNNLayer(nr_units = ou_units, 
                               layer_name = 'Softmax Output Layer',
-                              activation = 'softmax')
-    
+                              activation = 'softmax')  
     dnn.AddLayer(InpLayer)
     dnn.AddLayer(HidLayer1)
 #    dnn.AddLayer(HidLayer2)
     dnn.AddLayer(OutLayer)
-    dnn.PrepareModel(cost_function = 'cross_entropy')
+    dnn.PrepareModel(cost_function = 'cross_entropy')    
+    ##
+    ##  END  MODEL ARCHITECTURE
+    ##
     
     nr_examples = X_train.shape[0]
     nr_batches = nr_examples / batch_size
