@@ -3,19 +3,73 @@
 
 Fully Connected Online Deep Neural Network 
 
-Created on Thu Nov 10 09:24:20 2016
-
+@created: 2016-10-01
 @author: Andrei Ionut DAMIAN
+
+see also module __ver__,__credits__,.. etc loaded within OnlineDNN
+
 """
 
 from __future__ import print_function
 
+
 import numpy as np
+import pandas as pd
+
 from scipy.special import expit
 import sys
+from datetime import datetime as dt
+from time import time as tm
+
+from tqdm import tqdm
 
 
-class odn_utils:
+"""
+
+OnlineDNN classes and utilities
+ 
+"""
+
+__author__     = "Andrei Ionut DAMIAN"
+__copyright__  = "Copyright 2017, Cloudifier SRL"
+__credits__    = ["Octavian Bulie","Alexandru Purdila"]
+__license__    = "GPL"
+__version__    = "0.1.1"
+__maintainer__ = "Andrei Ionut DAMIAN"
+__email__      = "damian@cloudifier.net"
+__status__     = "Production"
+__library__    = "Online Deep Neural Network"
+__created__    = "2016-10-01"
+__modified__   = "2017-03-12"
+__lib__        = "ODNN"
+
+_DEBUG = True # module level debug flag
+
+
+class OnlineDNNBase:
+    def __init__(self):
+        # nothing special
+        return
+        
+    def _logger(self, logstr, show = True):
+        if not hasattr(self,'USE_SHORT_DATE'):
+            self.USE_SHORT_DATE = True
+            
+        if not hasattr(self, 'log'):        
+            self.log = list()
+            
+        nowtime = dt.now()
+        if self.USE_SHORT_DATE:
+            strnowtime = nowtime.strftime("[{}][%H:%M:%S] ".format(__lib__))
+        else:
+            strnowtime = nowtime.strftime("[{}][%H:%M:%S] ".format(__lib__))
+        logstr = strnowtime + logstr
+        self.log.append(logstr)
+        if show:
+            print(logstr, flush = True)
+        return    
+    
+class odn_utils(OnlineDNNBase):
     
             
     def FeatureNormalize(self,X_data, method = 'z-score'):
@@ -128,13 +182,19 @@ class odn_utils:
     ## feed of data to our OnlineClassifier
     ## cross-validation is used to obtain best J(Theta)
     ## 
-    def train_online_classifier(self, clf, X_train,y_train, X_cross = None,y_cross = None,batch_size=1):    
+    def train_online_classifier(self, clf, 
+                                X_train,y_train, 
+                                X_cross = None,y_cross = None,
+                                batch_size=1,
+                                epochs = 1):    
         nr_examples = X_train.shape[0]
-        nr_batches = nr_examples / batch_size
-        for i in range(nr_batches): 
-            xi = X_train[(i*batch_size):((i+1)*batch_size),:]
-            yi = y_train[(i*batch_size):((i+1)*batch_size)]
-            clf.OnlineTrain(xi,yi,X_cross=X_cross,y_cross=y_cross)
+        nr_batches = nr_examples // batch_size
+        for epoch in tqdm(range(epochs)):
+            for i in range(nr_batches): 
+                xi = X_train[(i*batch_size):((i+1)*batch_size),:]
+                yi = y_train[(i*batch_size):((i+1)*batch_size)]
+                clf.OnlineTrain(xi,yi,X_cross=X_cross,y_cross=y_cross)
+        clf.DumpLog()
         return clf
 
 
@@ -159,7 +219,7 @@ valid_cost = ['cross_entropy','MSE']
 
 valid_layers = ['','input','hidden','output']
 
-class OnlineDNNLayer:
+class OnlineDNNLayer(OnlineDNNBase):
     
     def __init__(self, nr_units, layer_name = '', 
                  PreviousLayer = None, NextLayer = None,
@@ -194,13 +254,16 @@ class OnlineDNNLayer:
         self.gradient = None
         self.momentum = None
         self.numericg = None
+        
+        self.step = -1
 
         return
         
     
-    def CheckCals(self,Z):
+    def IsComputingOk(self,Z):
         res = True        
         nr = np.sum(np.isinf(Z))
+        nr +=np.sum(np.isnan(Z))
         if nr>0 :
             res = False
         return res
@@ -230,20 +293,19 @@ class OnlineDNNLayer:
         res += '\n Gradient:'
         res += '\n {}'.format(self.gradient)
         
-        print(res)
+        self._logger(res)
         
         return (res1+res)
 
     def Describe(self):
         
-        res  = '\nLayer description'
-        res += '\n Name: {}'.format(self.layer_name)
-        res += '\n Id:   {}'.format(self.layer_id)
-        res += '\n Type: {}'.format(self.layer_type)
-        res += '\n Activ:{}'.format(self.activation)
-        res += '\n Units:{}'.format(self.nr_units)
+        res  = ' Layer:[{}]'.format(self.layer_id)
+        res += ' Name:[{}]'.format(self.layer_name)
+        res += ' Type:[{}]'.format(self.layer_type)
+        res += ' Act:[{}]'.format(self.activation)
+        res += ' Units:[{}]'.format(self.nr_units)
         
-        print(res)
+        self._logger(res, show = False)
         
         return res
         
@@ -256,7 +318,7 @@ class OnlineDNNLayer:
             y_pred = self.a_array
         else:
             raise Exception("[OnlineDNNLayer:" + str(self.layer_id)+" ERROR]"+
-                            " unknows outpu computation: " + act)
+                            " unknown output computation: " + act)
         return y_pred
     
     def SetLabels(self, y):
@@ -266,7 +328,7 @@ class OnlineDNNLayer:
             labels = self.nr_units
             nr_obs = y.shape[0]
             ohm = np.zeros((nr_obs,labels))
-            ohm[np.arange(nr_obs),y] = 1
+            ohm[np.arange(nr_obs),y.astype(int)] = 1
             self.y_ohm = ohm
             self.y_lbl = y
         elif act == 'direct':
@@ -392,8 +454,22 @@ class OnlineDNNLayer:
         z -= np.max(z) 
         
         ez = np.exp(z)
+        
            
         p = (ez.T / np.sum(ez, axis=1)).T 
+            
+        if not self.IsComputingOk(p):
+            print("z={}".format(z))
+            print("ez={}".format(ez))
+            print("p={}".format(p))
+            print("z nan ={}".format(np.isnan(z).sum()))
+            print("ez nan ={}".format(np.isnan(ez).sum()))
+            print("p nan ={}".format(np.isnan(p).sum()))
+            print("z inf ={}".format(np.isinf(z).sum()))
+            print("ez inf ={}".format(np.isinf(ez).sum()))
+            print("p inf ={}".format(np.isinf(p).sum()))
+            raise Exception('INF/NAN value in softmax step {}'.format(
+                    self.step))            
         return p
     
     def Dsoftmax(self,y,y_pred):
@@ -404,8 +480,9 @@ class OnlineDNNLayer:
         ## Generalized cross-entropy. y input is a OneHot matrix
         ##
         J_matrix = y*np.log(y_pred)
-        if not self.CheckCals(J_matrix):
-            raise Exception('INF value in log_loss')
+        if not self.IsComputingOk(J_matrix):
+            raise Exception('INF/NAN value in log_loss step {}'.format(
+                    self.step))
         J =-np.sum(J_matrix)
         J /= self.batch_size
         return J
@@ -482,46 +559,61 @@ class OnlineDNNLayer:
         
         
 
-class OnlineDNN:
-    def __init__(self, batch_size, output_labels = None, alpha = 0.1,
-                 VerboseFilter = 0, NoVerbose = False, Name = 'TestNet'):
+class OnlineDNN(OnlineDNNBase):
+    def __init__(self, 
+                 batch_size,            # size of each batch
+                 output_labels = None,  # list of output labels
+                 alpha = 0.1,           # learning rate
+                 momentum = 0.9,
+                 Verbose = 1,           # default minimal debug info
+                 Name = 'TestNet',      # default net name
+                 ):
+        
+        self.__author__     = __author__
+        self.__version__    = __version__
+        self.__library__    = __library__
+        self.__lib__        = __lib__
+        self._logger("{} ver: {}".format(self.__library__,
+              self.__version__))
         self.Layers = list()
         self.batch_size = batch_size
         self.Labels = output_labels
         self.alpha = alpha
 
-        self.Verbose = VerboseFilter
-        self.NoVerbose = NoVerbose      
-        self.Step = 0
+        self.Verbose = Verbose
+        self.Step = 1
         self.cost_list = list()
         self.Name = Name
         self.nr_layers = 0
-        self.momentum_speed = 0.9
+        self.momentum_speed = momentum
 
         return
         
-    def Describe(self):
-        res =''
-        res+='DNN:' 
-        res+=' Name: {}'.format(self.Name)
-        res+=' Layer:{}'.format(self.nr_layers)
-        print(res)
-        for i in range(self.nr_layers):
-            self.Layers[i].Describe();
-        
+    def DumpLog(self):
+        print("\n".join(self.log), flush = True)
         return
     
+    
+    def Describe(self):
+        res =''
+        res+='OnlineDNN v{}'.format(self.__version__)
+        res+=" Name: '{}'".format(self.Name)
+        res+=" Layer:{}".format(self.nr_layers)
+        self._logger(res, show = False)
+        res2 = "Layers:"
+        for i in range(self.nr_layers):
+            res2 += "\n  "+self.Layers[i].Describe();
+                               
+        self._logger(res2, show = False)
+        
+        return res
+    
     def DebugInfo(self, Value, lvl=0):
-        if self.NoVerbose:
-            return
-        if lvl<=self.Verbose:
+        if lvl>self.Verbose:
             return
         text = ""
-        #text = str(type(Value))
-        #text += ':\n'
         text += str(Value)
-        print(text)
-        sys.stdout.flush()   
+        self._logger(text,show = False)
         return
         
     def ComputeNumericalGradient(self, x_batch,y_batch):
@@ -597,6 +689,7 @@ class OnlineDNN:
         
         # set training labels
         OutputLayer = self.Layers[nr_layers-1]
+        OutputLayer.step = self.Step
         OutputLayer.SetLabels(y_batch)
         # generate current fprop training predictions
         y_preds = OutputLayer.GetOutputLabels()
@@ -611,12 +704,15 @@ class OnlineDNN:
         if False:
             OutputLayer.Describe()
     
-        acc = np.sum(y_batch==y_preds)/float(y_preds.shape[0])*100
+        acc = np.sum(y_batch==y_preds)/float(y_preds.shape[0])
         stp = self.Step
-        self.DebugInfo('[TRAIN] Acc:{:.1f}% Step:{} J:{:.2f}'.format(acc,stp,J),
-                       lvl=5)
-        self.DebugInfo('        yTru:{}'.format(y_batch),lvl=5)
-        self.DebugInfo('        yHat:{}'.format(y_preds),lvl=5)
+        if (stp % 100) == 0:
+            self.DebugInfo('[TRAIN Step:{:05d}] Acc:{:.2f} loss:{:.2f}'.format(
+                            stp,acc,J),
+                           lvl=1)
+            
+            self.DebugInfo('        yTru:{}'.format(y_batch),lvl=2)
+            self.DebugInfo('        yHat:{}'.format(y_preds),lvl=2)
         
 
                 
@@ -624,7 +720,7 @@ class OnlineDNN:
         for i in range(nr_layers-1,0,-1):
             grad = self.Layers[i].gradient
             momentum = self.Layers[i].momentum
-            if momentum != None:
+            if not (momentum is None):
                 momentum = self.Layers[i].momentum*self.momentum_speed
                 momentum = momentum + grad
             else:
@@ -677,7 +773,8 @@ class OnlineDNN:
         ## force output for last layer
         self.Layers[nr_layers-1].is_output = True
         self.Layers[nr_layers-1].cost_function = cost_function
-        
+        if self.Verbose>0:
+            self.Describe()                 
         return
         
     def OnlineTrain(self, xi, yi, X_cross = None, y_cross = None):
@@ -693,11 +790,22 @@ class OnlineDNN:
         y_preds = OutputLayer.GetOutputLabels()        
         return y_preds
         
-
+"""
+    END OnlineDNN Engine
+    
+"""
 
 
 
 if __name__ == '__main__':
+    
+    FULL_DEBUG = False
+
+    from keras.models import Sequential
+    from keras.layers import Dense, Activation
+    from keras.optimizers import SGD
+    from keras.utils import np_utils
+
     
     import sklearn.datasets as ds
     from sklearn import model_selection
@@ -735,16 +843,18 @@ if __name__ == '__main__':
     elif dataset =='MNIST':
         img_size = 28
         nr_features = img_size*img_size
-        dataDict = ds.fetch_mldata('MNIST Original')     
+        dataDict = ds.fetch_mldata('MNIST Original')
+        labels = np.unique(dataDict.target)
         X = dataDict.data[:-10000,]
+        X = X.astype(float) / 255
         y = dataDict.target[:-10000]   
         X_test = dataDict.data[-10000:,]
+        X_test = X_test.astype(float) / 255
         y_test = dataDict.target[-10000:]         
     else:
         raise Exception('Unknown dataset')
     
     
-    batch_size = 5
     general_seed = mseed #1234
     
     X_train, X_cross, \
@@ -761,35 +871,41 @@ if __name__ == '__main__':
     
   
     in_units = nr_features    
-    h1_units = 15 #int(nr_features*0.25)
+    h1_units = int(nr_features*2.5)
+    h1_activ = 'relu'
     h2_units = int(h1_units*0.5)
+    #h2_activ = 'tanh'
     ou_units = np.array(labels).size
+    l_rate = 0.01
+    mom_speed = 0.9
+    
+    nr_epochs = 10
+    batch_size = 1024
+    nr_examples = X_train.shape[0]
+    nr_batches = nr_examples // batch_size
+
+    
+
+    
 
 
-    ###
-    ###
-
-    first run / compare with mnielsen with same hyperparams
-    http://neuralnetworksanddeeplearning.com/chap3.html
-    (and/or change output to sigmoid layer)
-  
-    ###
-    ###
   
     ##
     ##  BEGIN MODEL ARCHITECTURE
     ##
     dnn = OnlineDNN(batch_size = batch_size, 
                     output_labels = labels,
-                    alpha = 0.1)
+                    alpha = l_rate,
+                    )
+    
     InpLayer  = OnlineDNNLayer(nr_units = in_units, 
                               layer_name = 'Input Layer')
     HidLayer1 = OnlineDNNLayer(nr_units = h1_units, 
                               layer_name = 'Hidden Layer #1',
-                              activation = 'sigmoid')
+                              activation = h1_activ)
 #    HidLayer2 = OnlineDNNLayer(nr_units = h2_units, 
 #                              layer_name = 'Hidden Layer #2',
-#                              activation = 'sigmoid')
+#                              activation = h1_activ)
     OutLayer  = OnlineDNNLayer(nr_units = ou_units, 
                               layer_name = 'Softmax Output Layer',
                               activation = 'softmax')  
@@ -802,28 +918,75 @@ if __name__ == '__main__':
     ##  END  MODEL ARCHITECTURE
     ##
     
-    nr_examples = X_train.shape[0]
-    nr_batches = nr_examples / batch_size
-    nr_epoch = 10
-    for ep in range(nr_epoch):
-        for i in range(nr_batches): 
-            xi = X_train[(i*batch_size):((i+1)*batch_size),:]
-            yi = y_train[(i*batch_size):((i+1)*batch_size)]
-            dnn.OnlineTrain(xi,yi,X_cross=X_cross,y_cross=y_cross)
+    trainer = odn_utils()
+    
+    t0=tm()
+    trainer.train_online_classifier(dnn,X_train,y_train,
+                                    batch_size=batch_size,
+                                    epochs=nr_epochs)
+    t1=tm()
+    tm_odnn = t1-t0
+
+    #for ep in range(nr_epochs):
+    #    for i in range(nr_batches): 
+    #        xi = X_train[(i*batch_size):((i+1)*batch_size),:]
+    #        yi = y_train[(i*batch_size):((i+1)*batch_size)]
+    #        dnn.OnlineTrain(xi,yi,X_cross=X_cross,y_cross=y_cross)
             
     y_preds = dnn.Predict(X_cross)
     acc = np.sum(y_preds == y_cross) / float(X_cross.shape[0])*100
     #print("preds: {}".format(y_preds))
     #print("cross: {}".format(y_cross))
-    print('\nCross accuracy: {:.1f}%\n'.format(acc))
+
+
+    ###
+    ###
+
+    ### run / compare with mnielsen with same hyperparams
+    ### http://neuralnetworksanddeeplearning.com/chap3.html
+    ### (and/or change output to sigmoid layer)
+    
+    # 1st try with Keras / TF
+    
+    # convert class vectors to binary class matrices
+    Y_train = np_utils.to_categorical(y_train, ou_units)
+    Y_cross = np_utils.to_categorical(y_cross, ou_units)
+    
+    model = Sequential()
+    model.add(Dense(output_dim=h1_units, input_dim=in_units))
+    model.add(Activation("sigmoid"))
+    model.add(Dense(output_dim=ou_units))
+    model.add(Activation("softmax"))
+    model.compile(loss='categorical_crossentropy', 
+                  optimizer=SGD(lr=l_rate, momentum=mom_speed, nesterov=False))
+    
+    t0 = tm()
+    model.fit(X_train, Y_train, 
+              nb_epoch=nr_epochs, batch_size=batch_size,
+              verbose = 1)
+    t1 = tm()
+    tm_keras = t1-t0
+    
+    y_preds_keras = model.predict(X_cross).argmax(axis = 1)
+    acc_keras = np.sum(y_preds_keras == y_cross) / float(X_cross.shape[0])*100
+    #print("preds: {}".format(y_preds))
+    #print("cross: {}".format(y_cross))
+  
+    ###
+    ###
+
+
+    print("\nResults:")
+    print('KERAS (train {:.2f}min) validation accuracy: {:.1f}%'.format(tm_keras/60,acc_keras))
+    print('ODNN  (train {:.2f}min) validation accuracy: {:.1f}%'.format(tm_odnn/60,acc))
     
     plt.plot(range(len(dnn.cost_list)),dnn.cost_list)
-    dnn.Describe()
     
-    if  (dataset == 'digits') or (dataset == ' MNIST'):
-        plt.matshow((X_train[0,:]*255).reshape(img_size,img_size),  cmap=plt.cm.gray)
-        plt.title('Example Y[0]:{}'.format(y_train[0]))        
-    elif dataset == 'iris':
-        print('Example X:{} y={}'.format(X_train[0,:],y_train[0]))
-    else:
-        raise Exception('Unknown dataset')
+    if FULL_DEBUG:
+        if  (dataset == 'digits') or (dataset == ' MNIST'):
+            plt.matshow((X_train[0,:]*255).reshape(img_size,img_size),  cmap=plt.cm.gray)
+            plt.title('Example Y[0]:{}'.format(y_train[0]))        
+        elif dataset == 'iris':
+            print('Example X:{} y={}'.format(X_train[0,:],y_train[0]))
+        else:
+            raise Exception('Unknown dataset')
