@@ -115,6 +115,7 @@ if __name__ == '__main__':
     ##
     dnn = OnlineDNN(output_labels = labels,
                     alpha = l_rate,
+                    ve
                     )
     
     InpLayer  = OnlineDNNLayer(nr_units = in_units, 
